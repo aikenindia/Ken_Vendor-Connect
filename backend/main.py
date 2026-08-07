@@ -138,3 +138,14 @@ def compare_rates(enquiry_id: int, db: Session = Depends(get_db)):
         })
 
     return {"enquiry_id": enquiry_id, "quotes": comparison}
+
+from services import ai
+
+class ChatMessage(BaseModel):
+    message: str
+
+@app.post("/chat/parse")
+def chat_parse(payload: ChatMessage, db: Session = Depends(get_db)):
+    vendors = db.query(models.Vendor).all()
+    parsed = ai.parse_enquiry_message(payload.message, vendors)
+    return parsed
