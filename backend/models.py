@@ -2,6 +2,14 @@ from sqlalchemy import Column, Integer, String, DateTime, ForeignKey
 from datetime import datetime
 from database import Base
 
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(150), nullable=False)
+    username = Column(String(100), unique=True, nullable=False)
+    password = Column(String(200), nullable=False)
+    role = Column(String(20), nullable=False)  # "purchase_user", "head", "vp", "owner"
+
 class Vendor(Base):
     __tablename__ = "vendors"
     id = Column(Integer, primary_key=True, index=True)
@@ -9,6 +17,7 @@ class Vendor(Base):
     whatsapp_number = Column(String(20), nullable=False)
     email = Column(String(150), nullable=True)
     category = Column(String(100), nullable=True)
+    assigned_to = Column(Integer, ForeignKey("users.id"), nullable=True)
 
 class Enquiry(Base):
     __tablename__ = "enquiries"
@@ -28,3 +37,12 @@ class EnquiryVendor(Base):
     quoted_rate = Column(String(50), nullable=True)
     moq = Column(String(50), nullable=True)
     delivery_days = Column(String(50), nullable=True)
+
+class Message(Base):
+    __tablename__ = "messages"
+    id = Column(Integer, primary_key=True, index=True)
+    vendor_id = Column(Integer, ForeignKey("vendors.id"))
+    sender = Column(String(20))  # "user", "vendor", or "ai"
+    text = Column(String(2000))
+    is_read = Column(Integer, default=0)  # 0 = unread, 1 = read
+    created_at = Column(DateTime, default=datetime.utcnow)

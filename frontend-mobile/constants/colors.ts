@@ -1,0 +1,16 @@
+export const COLORS = {
+  indigo: '#3B4B8C',
+  indigoDark: '#2C396E',
+  ink: '#1E2233',
+  slate: '#6E7484',
+  slateLight: '#A8ACB8',
+  border: '#E7E9F0',
+  bg: '#F7F8FB',
+  white: '#FFFFFF',
+  sage: '#3D9970',
+  sageBg: '#E3F4EB',
+  ochre: '#C08A2E',
+  ochreBg: '#FCF0DC',
+  peri: '#E8EBF9',
+  greyBubble: '#F0F1F4',
+};
