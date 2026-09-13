@@ -57,6 +57,7 @@ export default function RootLayout() {
         <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
         <Stack.Screen name="enquiry-chat" options={{ headerShown: false }} />
         <Stack.Screen name="vendor-chat/[id]" options={{ headerShown: false }} />
+        <Stack.Screen name="vendor-info/[id]" options={{ headerShown: false }} />
         <Stack.Screen name="add-vendor" options={{ headerShown: false }} />
         <Stack.Screen name="add-quote" options={{ headerShown: false }} />
         <Stack.Screen name="login" options={{ headerShown: false }} />

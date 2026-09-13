@@ -13,15 +13,27 @@ type InboxItem = {
   unread_count: number;
 };
 
-function timeAgo(iso: string | null) {
+function formatMessageTime(iso: string | null) {
   if (!iso) return '';
-  const diffMs = Date.now() - new Date(iso).getTime();
-  const mins = Math.floor(diffMs / 60000);
-  if (mins < 1) return 'now';
-  if (mins < 60) return `${mins}m`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h`;
-  return `${Math.floor(hrs / 24)}d`;
+  const parsedIso = iso.includes('T') && !iso.endsWith('Z') && !iso.includes('+') ? iso + 'Z' : iso;
+  const msgDate = new Date(parsedIso);
+  if (isNaN(msgDate.getTime())) return '';
+
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const yesterdayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+  const msgDayStart = new Date(msgDate.getFullYear(), msgDate.getMonth(), msgDate.getDate());
+
+  if (msgDayStart.getTime() === todayStart.getTime()) {
+    return msgDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true });
+  } else if (msgDayStart.getTime() === yesterdayStart.getTime()) {
+    return 'Yesterday';
+  } else {
+    const day = String(msgDate.getDate()).padStart(2, '0');
+    const month = String(msgDate.getMonth() + 1).padStart(2, '0');
+    const year = msgDate.getFullYear();
+    return `${day}/${month}/${year}`;
+  }
 }
 
 function initials(name: string) {
@@ -50,6 +62,12 @@ export default function VendorsScreen() {
   useFocusEffect(
     useCallback(() => {
       load();
+
+      const interval = setInterval(() => {
+        load();
+      }, 2000);
+
+      return () => clearInterval(interval);
     }, [load])
   );
 
@@ -124,7 +142,7 @@ export default function VendorsScreen() {
             <View style={styles.rowContent}>
               <View style={styles.rowTop}>
                 <Text style={styles.vendorName}>{item.name}</Text>
-                <Text style={styles.time}>{timeAgo(item.last_time)}</Text>
+                <Text style={styles.time}>{formatMessageTime(item.last_time)}</Text>
               </View>
               <View style={styles.rowBottom}>
                 <Text style={styles.lastMsg} numberOfLines={1}>
@@ -174,4 +192,4 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center', paddingHorizontal: 5,
   },
   unreadText: { color: '#fff', fontSize: 11, fontWeight: '700' },
-}); 
+});

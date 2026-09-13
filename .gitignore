@@ -15,3 +15,6 @@ __pycache__/
 
 # VS Code
 .vscode/
+
+# Expo tooling generated in backend workspace
+backend/.expo/

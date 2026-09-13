@@ -1,10 +1,11 @@
 import { useCallback, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView,
-  ActivityIndicator, TextInput, KeyboardAvoidingView, Linking, Alert, Platform
+  ActivityIndicator, TextInput, KeyboardAvoidingView, Alert, Platform
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 import { API_URL } from '@/constants/api';
 import { COLORS } from '@/constants/colors';
 
@@ -14,7 +15,16 @@ type Msg = {
   text: string;
   is_read: number;
   created_at: string;
+  pending?: boolean;
 };
+
+function formatTime(iso: string | null) {
+  if (!iso) return '';
+  const parsedIso = iso.includes('T') && !iso.endsWith('Z') && !iso.includes('+') ? iso + 'Z' : iso;
+  const d = new Date(parsedIso);
+  if (isNaN(d.getTime())) return '';
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true });
+}
 
 export default function VendorChatScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -24,47 +34,77 @@ export default function VendorChatScreen() {
   const [vendorPhone, setVendorPhone] = useState('');
   const [loading, setLoading] = useState(true);
   const [input, setInput] = useState('');
-  const [sending, setSending] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
 
   const scrollToEnd = () => {
     requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: true }));
   };
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (isSilent = false) => {
+    if (!id) return;
     try {
       const [msgRes, vendorsRes] = await Promise.all([
         fetch(`${API_URL}/messages/${id}`),
         fetch(`${API_URL}/vendors`),
       ]);
-      const msgData = await msgRes.json();
+      const msgData: Msg[] = await msgRes.json();
       const vendors = await vendorsRes.json();
-      setMessages(msgData);
+
+      setMessages((prev) => {
+        const pendingMsgs = prev.filter((m) => m.pending);
+        const serverIds = new Set(msgData.map((m) => m.id));
+        const activePending = pendingMsgs.filter((pm) => !serverIds.has(pm.id));
+        return [...msgData, ...activePending];
+      });
+
       const v = vendors.find((x: any) => String(x.id) === String(id));
       if (v) {
         setVendorName(v.name);
         setVendorPhone(v.whatsapp_number);
       }
 
-      fetch(`${API_URL}/messages/${id}/mark-read`, { method: 'POST' });
+      fetch(`${API_URL}/messages/${id}/mark-read`, { method: 'POST' }).catch(() => {});
     } catch (e) {
       // silent
     } finally {
-      setLoading(false);
+      if (!isSilent) setLoading(false);
     }
   }, [id]);
 
+  // Initial load + Real-time fast polling interval (every 1.5 seconds)
   useFocusEffect(
     useCallback(() => {
-      load();
+      load(false);
+
+      const interval = setInterval(() => {
+        load(true);
+      }, 1500);
+
+      return () => clearInterval(interval);
     }, [load])
   );
 
+  // OPTIMISTIC INSTANT MESSAGE SENDING (WhatsApp Speed)
   const sendMessage = async () => {
     const text = input.trim();
     if (!text) return;
+
+    // 1. Instant local UI update (0ms delay)
+    const tempId = Date.now();
+    const tempMsg: Msg = {
+      id: tempId,
+      sender: 'user',
+      text,
+      is_read: 1,
+      created_at: new Date().toISOString(),
+      pending: true,
+    };
+
     setInput('');
-    setSending(true);
+    setMessages((prev) => [...prev, tempMsg]);
+    scrollToEnd();
+
+    // 2. Network send in background
     try {
       const res = await fetch(`${API_URL}/messages`, {
         method: 'POST',
@@ -72,30 +112,19 @@ export default function VendorChatScreen() {
         body: JSON.stringify({ vendor_id: Number(id), sender: 'user', text }),
       });
       const newMsg = await res.json();
-      setMessages((prev) => [...prev, newMsg]);
+
+      // Replace temp optimistic message with confirmed server message
+      setMessages((prev) =>
+        prev.map((m) => (m.id === tempId ? { ...newMsg, pending: false } : m))
+      );
       scrollToEnd();
 
-      // If Meta WhatsApp Cloud API sent the message directly, no need to force open WhatsApp link
-      if (newMsg.whatsapp_api?.success) {
-        // Message sent via Meta WhatsApp Cloud API directly
-      } else {
-        // Fallback to wa.me link
-        const cleanPhone = vendorPhone.replace(/\D/g, '');
-        const waLink = newMsg.whatsapp_link || (cleanPhone ? `https://wa.me/${cleanPhone}?text=${encodeURIComponent(text)}` : null);
-        if (waLink) {
-          if (Platform.OS === 'web') {
-            window.open(waLink, '_blank');
-          } else {
-            await Linking.openURL(waLink);
-          }
-        } else {
-          Alert.alert('No WhatsApp number', 'This vendor has no valid WhatsApp number saved.');
-        }
+      if (newMsg.whatsapp_api?.error) {
+        Alert.alert('Delivery Notice', `Message saved locally, but Meta WhatsApp API returned: ${newMsg.whatsapp_api.error}`);
       }
     } catch (e) {
-      Alert.alert('Error', 'Could not send message. Please try again.');
-    } finally {
-      setSending(false);
+      Alert.alert('Error', 'Could not send message. Please check your network connection.');
+      setMessages((prev) => prev.filter((m) => m.id !== tempId));
     }
   };
 
@@ -104,10 +133,19 @@ export default function VendorChatScreen() {
       <SafeAreaView edges={['top']} style={styles.headerSafeArea}>
         <View style={styles.header}>
           <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-            <Text style={styles.backText}>‹</Text>
+            <Ionicons name="chevron-back" size={24} color="#fff" />
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>{vendorName}</Text>
-          <View style={{ width: 32 }} />
+          <TouchableOpacity
+            style={styles.headerTitleWrap}
+            onPress={() => router.push(`/vendor-info/${id}`)}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.headerTitle}>{vendorName}</Text>
+            <Text style={styles.headerSubtitle}>Tap for contact info</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => router.push(`/vendor-info/${id}`)} style={styles.infoIconButton}>
+            <Ionicons name="information-circle-outline" size={22} color="#fff" />
+          </TouchableOpacity>
         </View>
       </SafeAreaView>
 
@@ -139,6 +177,17 @@ export default function VendorChatScreen() {
                     editable={false}
                     multiline
                   />
+                  <View style={styles.bubbleFooter}>
+                    <Text style={styles.bubbleTime}>{m.pending ? 'sending...' : formatTime(m.created_at)}</Text>
+                    {isUser && (
+                      <Ionicons
+                        name={m.pending ? 'time-outline' : 'checkmark-done'}
+                        size={12}
+                        color={m.pending ? COLORS.slate : COLORS.indigo}
+                        style={{ marginLeft: 3 }}
+                      />
+                    )}
+                  </View>
                 </View>
               );
             })}
@@ -153,7 +202,7 @@ export default function VendorChatScreen() {
               placeholderTextColor={COLORS.slate}
               multiline
             />
-            <TouchableOpacity style={styles.sendButton} onPress={sendMessage} disabled={sending}>
+            <TouchableOpacity style={styles.sendButton} onPress={sendMessage}>
               <Text style={styles.sendButtonText}>Send</Text>
             </TouchableOpacity>
           </View>
@@ -172,8 +221,10 @@ const styles = StyleSheet.create({
     paddingTop: 12, paddingBottom: 12, paddingHorizontal: 16, backgroundColor: COLORS.indigo,
   },
   backButton: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  backText: { fontSize: 26, color: '#fff' },
+  headerTitleWrap: { flex: 1, alignItems: 'center' },
   headerTitle: { fontSize: 17, fontWeight: '700', color: '#fff' },
+  headerSubtitle: { fontSize: 11, color: '#D0D5EE', marginTop: 1 },
+  infoIconButton: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
   chatContent: { padding: 16, paddingBottom: 20 },
   hint: { fontSize: 13, color: COLORS.slate, textAlign: 'center', marginTop: 40 },
   bubble: { borderRadius: 14, padding: 12, marginBottom: 10, maxWidth: '85%' },
@@ -181,6 +232,11 @@ const styles = StyleSheet.create({
   vendorBubble: { alignSelf: 'flex-start', backgroundColor: '#fff', borderWidth: 1, borderColor: COLORS.border },
   senderLabel: { fontSize: 10, color: COLORS.slateLight, marginBottom: 4, fontWeight: '700' },
   bubbleText: { fontSize: 14, color: COLORS.ink, padding: 0, margin: 0 },
+  bubbleFooter: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end',
+    marginTop: 4,
+  },
+  bubbleTime: { fontSize: 10, color: COLORS.slateLight },
   inputRow: {
     flexDirection: 'row', alignItems: 'flex-end', padding: 12, gap: 10,
     backgroundColor: '#fff', borderTopWidth: 1, borderTopColor: COLORS.border,

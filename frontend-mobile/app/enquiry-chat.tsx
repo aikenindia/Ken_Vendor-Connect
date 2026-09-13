@@ -34,6 +34,7 @@ type ParsedResult = {
   ready: boolean;
   items: EnquiryItem[];
   delivery_date: string | null;
+  send_mode?: 'combined' | 'separate' | null;
   vendor_ids: number[];
   clarification: string | null;
   reply: string | null;
@@ -121,7 +122,8 @@ export default function EnquiryChatScreen() {
           { role: 'ai_text', text: data.reply || "How can I help?" },
         ]);
       } else if (data.type === 'multiple') {
-        const selectedIdsByItem = data.items.map(() => [] as number[]);
+        const defaultVids = data.vendor_ids && data.vendor_ids.length > 0 ? data.vendor_ids.slice() : [];
+        const selectedIdsByItem = data.items.map(() => defaultVids.slice());
         setMessages((prev) => [
           ...prev,
           { role: 'ai_text', text: data.clarification || `I found ${data.items.length} items. Review and send below.` },
@@ -181,30 +183,71 @@ export default function EnquiryChatScreen() {
       return;
     }
     setLoading(true);
+    const sendMode = data.send_mode || 'combined';
+
     try {
       const results: SentEnquiry[] = [];
-      for (let i = 0; i < data.items.length; i++) {
-        const item = data.items[i];
+
+      if (sendMode === 'combined') {
+        const allSelectedVids = Array.from(new Set(selectedIdsByItem.flat()));
+        const itemsPayload = data.items.map((item, i) => ({
+          item: item.item,
+          spec: item.spec,
+          quantity: item.quantity,
+          message_body: item.message_body || null,
+          vendor_ids: selectedIdsByItem[i],
+        }));
+
         const res = await fetch(`${API_URL}/enquiries`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            item: item.item,
-            spec: item.spec,
-            quantity: item.quantity,
+            send_mode: 'combined',
             delivery_date: data.delivery_date,
-            vendor_ids: selectedIdsByItem[i],
+            vendor_ids: allSelectedVids,
             sender_name: currentUser?.name || null,
-            message_body: item.message_body || null,
+            items: itemsPayload,
           }),
         });
+
         const result = await res.json();
-        results.push({
-          enquiryId: result.enquiry_id,
-          item: item.item,
-          sentTo: result.sent_to || [],
-        });
+        const enquiryIds: number[] = result.enquiry_ids || (result.enquiry_id ? [result.enquiry_id] : []);
+
+        for (let i = 0; i < data.items.length; i++) {
+          const item = data.items[i];
+          const eqId = enquiryIds[i] || result.enquiry_id || 0;
+          results.push({
+            enquiryId: eqId,
+            item: item.item + (item.spec ? ` (${item.spec})` : ''),
+            sentTo: result.sent_to || [],
+          });
+        }
+      } else {
+        for (let i = 0; i < data.items.length; i++) {
+          const item = data.items[i];
+          const res = await fetch(`${API_URL}/enquiries`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              send_mode: 'separate',
+              item: item.item,
+              spec: item.spec,
+              quantity: item.quantity,
+              delivery_date: data.delivery_date,
+              vendor_ids: selectedIdsByItem[i],
+              sender_name: currentUser?.name || null,
+              message_body: item.message_body || null,
+            }),
+          });
+          const result = await res.json();
+          results.push({
+            enquiryId: result.enquiry_id,
+            item: item.item,
+            sentTo: result.sent_to || [],
+          });
+        }
       }
+
       setMessages((prev) => [...prev, { role: 'ai_sent', results }]);
     } catch (e) {
       Alert.alert('Error', 'Could not send one or more enquiries. Please try again.');
@@ -343,7 +386,7 @@ export default function EnquiryChatScreen() {
                   <View style={[styles.confirmCard, isSelected && styles.bubbleSelected]}>
                     <Text style={styles.confirmIntro}>
                       {d.items.length > 1
-                        ? `${d.items.length} items found. Review each before sending:`
+                        ? `${d.items.length} items found (${(d.send_mode || 'combined') === 'combined' ? 'Combined message' : 'Separate messages'}). Review each before sending:`
                         : 'I understood your enquiry as follows. Please confirm:'}
                     </Text>
 
@@ -401,7 +444,11 @@ export default function EnquiryChatScreen() {
                         onPress={() => confirmAndSendAll(d, msg.selectedIdsByItem)}
                       >
                         <Text style={styles.confirmButtonText}>
-                          {d.items.length > 1 ? `Confirm & send ${d.items.length} enquiries` : 'Confirm & send'}
+                          {d.items.length > 1
+                            ? (d.send_mode || 'combined') === 'combined'
+                              ? `Confirm & send combined enquiry (${d.items.length} items)`
+                              : `Confirm & send ${d.items.length} separate enquiries`
+                            : 'Confirm & send'}
                         </Text>
                       </TouchableOpacity>
                     </View>
@@ -423,15 +470,10 @@ export default function EnquiryChatScreen() {
                             <View style={{ flex: 1 }}>
                               <Text style={styles.sentVendorName}>{v.vendor}</Text>
                               <Text style={styles.sentVendorMeta}>
-                                {v.whatsapp_api_sent ? 'WhatsApp API Sent ✓ • ' : ''}
-                                {v.email_sent ? 'Email sent' : 'No email on file'}
+                                {v.whatsapp_api_sent ? 'Direct WhatsApp API Sent ✓ • ' : (v.whatsapp_api_error ? `WhatsApp Error: ${v.whatsapp_api_error} • ` : '')}
+                                {v.email_sent ? 'Email sent ✓' : 'No email on file'}
                               </Text>
                             </View>
-                            <TouchableOpacity onPress={() => openWhatsApp(v.whatsapp_link)}>
-                              <Text style={styles.waLink}>
-                                {v.whatsapp_api_sent ? 'Open Chat' : 'Send WhatsApp'}
-                              </Text>
-                            </TouchableOpacity>
                           </View>
                         ))}
                       </View>
