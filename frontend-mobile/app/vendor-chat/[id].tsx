@@ -34,6 +34,9 @@ export default function VendorChatScreen() {
   const [vendorPhone, setVendorPhone] = useState('');
   const [loading, setLoading] = useState(true);
   const [input, setInput] = useState('');
+  const [templateMode, setTemplateMode] = useState(false);
+  const [templateName, setTemplateName] = useState('');
+  const [templateLanguage, setTemplateLanguage] = useState('en_US');
   const scrollRef = useRef<ScrollView>(null);
 
   const scrollToEnd = () => {
@@ -128,6 +131,42 @@ export default function VendorChatScreen() {
     }
   };
 
+  const sendTemplate = async () => {
+    const name = templateName.trim();
+    if (!name || !vendorPhone) return;
+
+    try {
+      const res = await fetch(`${API_URL}/whatsapp/send-template`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          phone_number: vendorPhone,
+          template_name: name,
+          language_code: templateLanguage.trim() || 'en_US',
+        }),
+      });
+      const result = await res.json();
+      if (!result.api_result?.success) {
+        Alert.alert('Template not sent', result.api_result?.error || 'Meta rejected this template.');
+        return;
+      }
+
+      const templateMessage: Msg = {
+        id: Date.now(),
+        sender: 'user',
+        text: `[Template: ${name}]`,
+        is_read: 1,
+        created_at: new Date().toISOString(),
+      };
+      setMessages((prev) => [...prev, templateMessage]);
+      setTemplateName('');
+      setTemplateMode(false);
+      scrollToEnd();
+    } catch (e) {
+      Alert.alert('Error', 'Could not send the WhatsApp template.');
+    }
+  };
+
   return (
     <KeyboardAvoidingView style={styles.screen} behavior="padding" keyboardVerticalOffset={0}>
       <SafeAreaView edges={['top']} style={styles.headerSafeArea}>
@@ -193,18 +232,58 @@ export default function VendorChatScreen() {
             })}
           </ScrollView>
 
-          <View style={styles.inputRow}>
-            <TextInput
-              style={styles.input}
-              value={input}
-              onChangeText={setInput}
-              placeholder={`Message ${vendorName}...`}
-              placeholderTextColor={COLORS.slate}
-              multiline
-            />
-            <TouchableOpacity style={styles.sendButton} onPress={sendMessage}>
-              <Text style={styles.sendButtonText}>Send</Text>
-            </TouchableOpacity>
+          <View style={styles.composer}>
+            <View style={styles.modeRow}>
+              <TouchableOpacity
+                style={[styles.modeButton, !templateMode && styles.activeModeButton]}
+                onPress={() => setTemplateMode(false)}
+              >
+                <Text style={[styles.modeText, !templateMode && styles.activeModeText]}>Message</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modeButton, templateMode && styles.activeModeButton]}
+                onPress={() => setTemplateMode(true)}
+              >
+                <Text style={[styles.modeText, templateMode && styles.activeModeText]}>Template</Text>
+              </TouchableOpacity>
+            </View>
+            {templateMode ? (
+              <View style={styles.templateFields}>
+                <TextInput
+                  style={styles.templateInput}
+                  value={templateName}
+                  onChangeText={setTemplateName}
+                  placeholder="Approved template name"
+                  placeholderTextColor={COLORS.slate}
+                  autoCapitalize="none"
+                />
+                <TextInput
+                  style={styles.languageInput}
+                  value={templateLanguage}
+                  onChangeText={setTemplateLanguage}
+                  placeholder="en_US"
+                  placeholderTextColor={COLORS.slate}
+                  autoCapitalize="none"
+                />
+                <TouchableOpacity style={styles.sendButton} onPress={sendTemplate}>
+                  <Text style={styles.sendButtonText}>Send</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <View style={styles.inputRow}>
+                <TextInput
+                  style={styles.input}
+                  value={input}
+                  onChangeText={setInput}
+                  placeholder={`Message ${vendorName}...`}
+                  placeholderTextColor={COLORS.slate}
+                  multiline
+                />
+                <TouchableOpacity style={styles.sendButton} onPress={sendMessage}>
+                  <Text style={styles.sendButtonText}>Send</Text>
+                </TouchableOpacity>
+              </View>
+            )}
           </View>
         </>
       )}
@@ -240,6 +319,26 @@ const styles = StyleSheet.create({
   inputRow: {
     flexDirection: 'row', alignItems: 'flex-end', padding: 12, gap: 10,
     backgroundColor: '#fff', borderTopWidth: 1, borderTopColor: COLORS.border,
+  },
+  composer: {
+    backgroundColor: '#fff', borderTopWidth: 1, borderTopColor: COLORS.border,
+    paddingTop: 8,
+  },
+  modeRow: { flexDirection: 'row', paddingHorizontal: 12, gap: 8 },
+  modeButton: { borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6 },
+  activeModeButton: { backgroundColor: COLORS.indigo },
+  modeText: { color: COLORS.slate, fontSize: 12, fontWeight: '600' },
+  activeModeText: { color: '#fff' },
+  templateFields: {
+    flexDirection: 'row', alignItems: 'center', padding: 12, gap: 8,
+  },
+  templateInput: {
+    flex: 1, borderWidth: 1, borderColor: COLORS.border, borderRadius: 14,
+    paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, color: COLORS.ink,
+  },
+  languageInput: {
+    width: 68, borderWidth: 1, borderColor: COLORS.border, borderRadius: 14,
+    paddingHorizontal: 8, paddingVertical: 10, fontSize: 13, color: COLORS.ink,
   },
   input: {
     flex: 1, borderWidth: 1, borderColor: COLORS.border, borderRadius: 14,

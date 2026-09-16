@@ -487,6 +487,11 @@ class DirectWhatsAppPayload(BaseModel):
     phone_number: str
     message: str
 
+class TemplateWhatsAppPayload(BaseModel):
+    phone_number: str
+    template_name: str = "hello_world"
+    language_code: str = "en_US"
+
 @app.post("/whatsapp/send")
 def send_direct_whatsapp(payload: DirectWhatsAppPayload):
     result = sender.send_whatsapp_direct(payload.phone_number, payload.message)
@@ -495,6 +500,11 @@ def send_direct_whatsapp(payload: DirectWhatsAppPayload):
         "api_result": result,
         "whatsapp_link": wa_link
     }
+
+@app.post("/whatsapp/send-template")
+def send_template_whatsapp(payload: TemplateWhatsAppPayload):
+    result = sender.send_whatsapp_template(payload.phone_number, payload.template_name, payload.language_code)
+    return {"api_result": result}
 
 @app.get("/whatsapp/webhook")
 def verify_whatsapp_webhook(request: Request):
