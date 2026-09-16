@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Depends, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from database import engine, get_db, Base
@@ -97,7 +98,7 @@ class VendorCreate(BaseModel):
 def list_vendors(user_id: int | None = None, role: str | None = None, db: Session = Depends(get_db)):
     query = db.query(models.Vendor)
     if role == "purchase_user" and user_id:
-        query = query.filter(models.Vendor.assigned_to == user_id)
+        query = query.filter(or_(models.Vendor.assigned_to == user_id, models.Vendor.assigned_to == None))
     return query.all()
 
 @app.post("/vendors")
@@ -107,6 +108,30 @@ def add_vendor(vendor: VendorCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(new_vendor)
     return new_vendor
+
+class VendorUpdate(BaseModel):
+    name: str | None = None
+    whatsapp_number: str | None = None
+    email: str | None = None
+    category: str | None = None
+
+@app.patch("/vendors/{vendor_id}")
+@app.put("/vendors/{vendor_id}")
+def update_vendor(vendor_id: int, payload: VendorUpdate, db: Session = Depends(get_db)):
+    vendor = db.query(models.Vendor).filter(models.Vendor.id == vendor_id).first()
+    if not vendor:
+        return {"error": "Vendor not found"}
+    if payload.email is not None:
+        vendor.email = payload.email
+    if payload.name is not None:
+        vendor.name = payload.name
+    if payload.whatsapp_number is not None:
+        vendor.whatsapp_number = payload.whatsapp_number
+    if payload.category is not None:
+        vendor.category = payload.category
+    db.commit()
+    db.refresh(vendor)
+    return vendor
 
 @app.delete("/vendors/{vendor_id}")
 def delete_vendor(vendor_id: int, db: Session = Depends(get_db)):
@@ -152,79 +177,174 @@ def build_email_message(sender_name: str, message_body: str) -> str:
 
 
 # ---------- ENQUIRIES ----------
-class EnquiryCreate(BaseModel):
+class ItemData(BaseModel):
     item: str
     spec: str | None = None
     quantity: str | None = None
+    message_body: str | None = None
+    vendor_ids: list[int] | None = None
+
+class EnquiryCreate(BaseModel):
+    item: str | None = None
+    spec: str | None = None
+    quantity: str | None = None
     delivery_date: str | None = None
-    vendor_ids: list[int]
+    vendor_ids: list[int] = []
     sender_name: str | None = None
     message_body: str | None = None
+    items: list[ItemData] | None = None
+    send_mode: str | None = "combined"
 
 @app.post("/enquiries")
 def create_enquiry(payload: EnquiryCreate, db: Session = Depends(get_db)):
-    enquiry = models.Enquiry(
-        item=payload.item,
-        spec=payload.spec,
-        quantity=payload.quantity or "Not specified",
-        delivery_date=payload.delivery_date
-    )
-    db.add(enquiry)
-    db.commit()
-    db.refresh(enquiry)
-
+    send_mode = (payload.send_mode or "combined").lower()
     sender_name = payload.sender_name or "the Purchase Team"
 
-    if payload.message_body:
-        body = clean_message_body(payload.message_body)
+    if payload.items and len(payload.items) > 0:
+        raw_items = payload.items
     else:
-        body_lines = [f"Item       : {payload.item}"]
-        if payload.spec:
-            body_lines.append(f"Spec       : {payload.spec}")
-        if payload.quantity:
-            body_lines.append(f"Quantity   : {payload.quantity}")
+        raw_items = [
+            ItemData(
+                item=payload.item or "Enquiry",
+                spec=payload.spec,
+                quantity=payload.quantity,
+                message_body=payload.message_body,
+                vendor_ids=payload.vendor_ids
+            )
+        ]
+
+    created_enquiries = []
+    for it in raw_items:
+        enq = models.Enquiry(
+            item=it.item,
+            spec=it.spec,
+            quantity=it.quantity or "Not specified",
+            delivery_date=payload.delivery_date
+        )
+        db.add(enq)
+        db.flush()
+        created_enquiries.append((enq, it))
+
+    def format_item_body(it: ItemData) -> str:
+        if it.message_body:
+            return clean_message_body(it.message_body)
+        body_lines = [f"Item       : {it.item}"]
+        if it.spec:
+            body_lines.append(f"Spec       : {it.spec}")
+        if it.quantity:
+            body_lines.append(f"Quantity   : {it.quantity}")
         if payload.delivery_date:
             body_lines.append(f"Delivery   : {payload.delivery_date}")
-        body = "\n".join(body_lines)
-
-    whatsapp_message = build_whatsapp_message(sender_name, body)
-    email_message = build_email_message(sender_name, body)
+        return "\n".join(body_lines)
 
     results = []
-    for vid in payload.vendor_ids:
-        vendor = db.query(models.Vendor).filter(models.Vendor.id == vid).first()
-        if not vendor:
-            continue
 
-        whatsapp_link = sender.get_whatsapp_link(vendor.whatsapp_number, whatsapp_message)
-        wa_api_result = sender.send_whatsapp_direct(vendor.whatsapp_number, whatsapp_message)
+    if send_mode == "combined":
+        all_vendor_ids = list(payload.vendor_ids)
+        for it in raw_items:
+            if it.vendor_ids:
+                for vid in it.vendor_ids:
+                    if vid not in all_vendor_ids:
+                        all_vendor_ids.append(vid)
 
-        email_sent = False
-        if vendor.email:
-            sender.send_email(vendor.email, f"Enquiry - {payload.item}", email_message)
-            email_sent = True
+        for vid in all_vendor_ids:
+            vendor = db.query(models.Vendor).filter(models.Vendor.id == vid).first()
+            if not vendor:
+                continue
 
-        ev = models.EnquiryVendor(enquiry_id=enquiry.id, vendor_id=vid, status="sent")
-        db.add(ev)
+            vendor_items = [
+                (enq, it) for (enq, it) in created_enquiries
+                if not it.vendor_ids or vid in it.vendor_ids or vid in payload.vendor_ids
+            ]
+            if not vendor_items:
+                continue
 
-        msg = models.Message(
-            vendor_id=vid,
-            sender="user",
-            text=whatsapp_message,
-            is_read=1,
-        )
-        db.add(msg)
+            formatted_blocks = []
+            for idx, (enq, it) in enumerate(vendor_items, 1):
+                item_body = format_item_body(it)
+                if len(vendor_items) > 1:
+                    formatted_blocks.append(f"--- Item {idx} ---\n{item_body}")
+                else:
+                    formatted_blocks.append(item_body)
 
-        results.append({
-            "vendor": vendor.name,
-            "whatsapp_link": whatsapp_link,
-            "whatsapp_api_sent": wa_api_result.get("success", False),
-            "whatsapp_api_error": wa_api_result.get("error"),
-            "email_sent": email_sent
-        })
+            combined_body = "\n\n".join(formatted_blocks)
+            whatsapp_message = build_whatsapp_message(sender_name, combined_body)
+            email_message = build_email_message(sender_name, combined_body)
+
+            whatsapp_link = sender.get_whatsapp_link(vendor.whatsapp_number, whatsapp_message)
+            wa_api_result = sender.send_whatsapp_direct(vendor.whatsapp_number, whatsapp_message)
+
+            email_sent = False
+            if vendor.email:
+                subject_item = vendor_items[0][1].item if len(vendor_items) == 1 else "Multi-Item Enquiry"
+                email_sent = sender.send_email(vendor.email, f"Enquiry - {subject_item}", email_message)
+
+            for enq, _ in vendor_items:
+                ev = models.EnquiryVendor(enquiry_id=enq.id, vendor_id=vid, status="sent")
+                db.add(ev)
+
+            msg = models.Message(
+                vendor_id=vid,
+                sender="user",
+                text=whatsapp_message,
+                is_read=1,
+            )
+            db.add(msg)
+
+            results.append({
+                "vendor": vendor.name,
+                "whatsapp_link": whatsapp_link,
+                "whatsapp_api_sent": wa_api_result.get("success", False),
+                "whatsapp_api_error": wa_api_result.get("error"),
+                "email_sent": email_sent
+            })
+
+    else:
+        for enq, it in created_enquiries:
+            target_vids = it.vendor_ids if (it.vendor_ids and len(it.vendor_ids) > 0) else payload.vendor_ids
+            item_body = format_item_body(it)
+            whatsapp_message = build_whatsapp_message(sender_name, item_body)
+            email_message = build_email_message(sender_name, item_body)
+
+            for vid in target_vids:
+                vendor = db.query(models.Vendor).filter(models.Vendor.id == vid).first()
+                if not vendor:
+                    continue
+
+                whatsapp_link = sender.get_whatsapp_link(vendor.whatsapp_number, whatsapp_message)
+                wa_api_result = sender.send_whatsapp_direct(vendor.whatsapp_number, whatsapp_message)
+
+                email_sent = False
+                if vendor.email:
+                    email_sent = sender.send_email(vendor.email, f"Enquiry - {it.item}", email_message)
+
+                ev = models.EnquiryVendor(enquiry_id=enq.id, vendor_id=vid, status="sent")
+                db.add(ev)
+
+                msg = models.Message(
+                    vendor_id=vid,
+                    sender="user",
+                    text=whatsapp_message,
+                    is_read=1,
+                )
+                db.add(msg)
+
+                results.append({
+                    "vendor": vendor.name,
+                    "whatsapp_link": whatsapp_link,
+                    "whatsapp_api_sent": wa_api_result.get("success", False),
+                    "whatsapp_api_error": wa_api_result.get("error"),
+                    "email_sent": email_sent
+                })
 
     db.commit()
-    return {"enquiry_id": enquiry.id, "sent_to": results}
+    created_ids = [enq.id for enq, _ in created_enquiries]
+    primary_id = created_ids[0] if created_ids else None
+    return {
+        "enquiry_id": primary_id,
+        "enquiry_ids": created_ids,
+        "sent_to": results
+    }
 
 
 @app.get("/enquiries")
@@ -418,6 +538,25 @@ async def handle_whatsapp_webhook(request: Request, db: Session = Depends(get_db
                             )
                             db.add(msg)
                             db.commit()
+
+                            # AI Auto-Quote Parsing from WhatsApp message
+                            try:
+                                parsed_quote = ai.parse_vendor_quote_reply(text_body)
+                                if parsed_quote.get("quoted_rate"):
+                                    latest_ev = db.query(models.EnquiryVendor).filter(
+                                        models.EnquiryVendor.vendor_id == target_vendor.id
+                                    ).order_by(models.EnquiryVendor.id.desc()).first()
+
+                                    if latest_ev:
+                                        latest_ev.status = "replied"
+                                        latest_ev.quoted_rate = str(parsed_quote["quoted_rate"])
+                                        if parsed_quote.get("moq"):
+                                            latest_ev.moq = str(parsed_quote["moq"])
+                                        if parsed_quote.get("delivery_days"):
+                                            latest_ev.delivery_days = str(parsed_quote["delivery_days"])
+                                        db.commit()
+                            except Exception as q_err:
+                                print("AI quote parse error in webhook:", q_err)
     except Exception as e:
         print("Error processing webhook:", e)
     return {"status": "ok"}
@@ -441,7 +580,7 @@ def mark_read(vendor_id: int, db: Session = Depends(get_db)):
 def vendor_inbox(user_id: int | None = None, role: str | None = None, db: Session = Depends(get_db)):
     query = db.query(models.Vendor)
     if role == "purchase_user" and user_id:
-        query = query.filter(models.Vendor.assigned_to == user_id)
+        query = query.filter(or_(models.Vendor.assigned_to == user_id, models.Vendor.assigned_to == None))
     vendors = query.all()
 
     result = []

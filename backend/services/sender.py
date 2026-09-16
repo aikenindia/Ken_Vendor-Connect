@@ -5,16 +5,13 @@ import requests
 from email.mime.text import MIMEText
 import config
 
-def send_email(to_email: str, subject: str, body: str):
-    msg = MIMEText(body)
-    msg["Subject"] = subject
-    msg["From"] = config.SENDER_EMAIL
-    msg["To"] = to_email
-
-    with smtplib.SMTP(config.SMTP_SERVER, config.SMTP_PORT) as server:
-        server.starttls()
-        server.login(config.SENDER_EMAIL, config.SENDER_EMAIL_PASSWORD)
-        server.sendmail(config.SENDER_EMAIL, to_email, msg.as_string())
+def send_email(to_email: str, subject: str, body: str) -> bool:
+    """
+    Email sending is completely disabled to prevent Mail Delivery System bounce messages.
+    All vendor enquiries are sent exclusively via WhatsApp.
+    """
+    print(f"[EMAIL DISABLED] Email dispatch skipped for {to_email}")
+    return False
 
 def clean_phone_number(phone_number: str) -> str:
     digits = re.sub(r"\D", "", phone_number)
